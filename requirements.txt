@@ -1,0 +1,29 @@
+# LangChain 核心套件
+langchain==0.1.0
+langchain-community==0.0.10
+
+# 向量資料庫
+chromadb==0.4.22
+
+# 文件處理
+pypdf==3.17.4
+python-docx==1.1.0
+markdown==3.5.1
+beautifulsoup4==4.12.2
+
+# 環境變數管理
+python-dotenv==1.0.0
+
+# xAI API (Grok)
+openai==1.7.2
+
+# Embeddings (使用 HuggingFace 或 Sentence Transformers)
+sentence-transformers==2.2.2
+
+# 其他工具
+tiktoken==0.5.2
+
+# 股票分析工具
+pandas>=2.0.0
+requests>=2.31.0
+matplotlib>=3.7.0
