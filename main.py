@@ -58,7 +58,7 @@ class KnowledgeBaseApp:
         # 初始化配置
         self.persist_directory = os.getenv("CHROMA_PERSIST_DIRECTORY", "./knowledge_base/data/chroma")
         self.documents_directory = os.getenv("DOCUMENTS_DIRECTORY", "./knowledge_base/documents")
-        self.model_name = os.getenv("XAI_MODEL", "grok-beta")
+        self.model_name = os.getenv("XAI_MODEL", "grok-4-1-fast-reasoning")
         self.embedding_model = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
         self.max_iterations = int(os.getenv("MAX_ITERATIONS", "10"))
         self.verbose = os.getenv("VERBOSE", "true").lower() == "true"

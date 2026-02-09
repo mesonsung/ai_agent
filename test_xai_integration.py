@@ -75,7 +75,7 @@ def test_xai_api():
         
         xai_api_key = os.getenv("XAI_API_KEY")
         xai_base_url = os.getenv("XAI_BASE_URL", "https://api.x.ai/v1")
-        xai_model = os.getenv("XAI_MODEL", "grok-beta")
+        xai_model = os.getenv("XAI_MODEL", "grok-4-1-fast-reasoning")
         
         print(f"正在連接 xAI API...")
         print(f"模型: {xai_model}")

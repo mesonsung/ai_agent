@@ -1,4 +1,9 @@
-"""股票分析工具 - 使用 TWSE 台灣證券交易所數據"""
+"""股票分析工具 - 使用 TWSE/TPEx 台灣證券交易所與櫃買中心數據
+
+支援：
+- 上市股票 (TWSE): 如 2330 台積電、2317 鴻海
+- 上櫃股票 (TPEx): 如 6488 環球晶、5765 雲豹能源
+"""
 
 from typing import Optional, Type, Any
 from langchain_core.tools import BaseTool
@@ -11,7 +16,7 @@ from .stock_chart import StockChartGenerator
 
 class StockPriceInput(BaseModel):
     """股票價格查詢工具的輸入模型"""
-    stock_id: str = Field(description="台灣股票代碼，例如 2330（台積電）、2317（鴻海）")
+    stock_id: str = Field(description="台灣股票代碼，支援上市(TWSE)與上櫃(TPEx)股票。例如：2330（台積電-上市）、6488（環球晶-上櫃）")
 
 
 class StockPriceTool(BaseTool):
@@ -22,8 +27,11 @@ class StockPriceTool(BaseTool):
     name: str = "stock_price"
     description: str = """
     查詢台灣股票的即時價格和基本資訊。
-    輸入股票代碼（例如：2330、2317、2454）即可獲取該股票的最新價格、漲跌幅、成交量等資訊。
-    此工具使用台灣證券交易所（TWSE）的數據。
+    支援上市(TWSE)與上櫃(TPEx)股票，系統會自動判斷。
+    輸入股票代碼即可獲取該股票的最新價格、漲跌幅、成交量等資訊。
+
+    上市股票範例：2330（台積電）、2317（鴻海）、2454（聯發科）
+    上櫃股票範例：6488（環球晶）、5765（雲豹能源）、3105（穩懋）
     """
     args_schema: Type[BaseModel] = StockPriceInput
     fetcher: Any = None
@@ -38,14 +46,37 @@ class StockPriceTool(BaseTool):
         run_manager: Optional[CallbackManagerForToolRun] = None,
     ) -> str:
         """執行股票價格查詢"""
+        import json
+        import re
+
         try:
+            # 處理 JSON 格式的輸入
+            if stock_id and isinstance(stock_id, str):
+                stock_id = stock_id.strip()
+                if stock_id.startswith('{'):
+                    try:
+                        data = json.loads(stock_id)
+                        stock_id = data.get('stock_id') or data.get('stock_code') or data.get('code') or data.get('id')
+                    except json.JSONDecodeError:
+                        pass
+
+            # 提取純數字股票代碼
+            if stock_id:
+                match = re.search(r'\d{4,}', str(stock_id))
+                if match:
+                    stock_id = match.group()
+
+            if not stock_id:
+                return "查詢失敗：請提供有效的股票代碼"
+
             info = self.fetcher.get_stock_info(stock_id)
             
             if 'error' in info:
                 return f"查詢失敗：{info['error']}"
             
+            market_name = info.get('market_name', '上市')
             result = f"""
-📊 股票資訊 - {info.get('stock_id', stock_id)} {info.get('name', '')}
+📊 股票資訊 - {info.get('stock_id', stock_id)} {info.get('name', '')} [{market_name}]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 💰 收盤價：{info.get('close', 'N/A')} 元
 📈 漲跌：{info.get('change', 'N/A')}
@@ -55,6 +86,7 @@ class StockPriceTool(BaseTool):
 📊 成交量：{info.get('trade_volume', 'N/A')} 股
 💵 成交金額：{info.get('trade_value', 'N/A')} 元
 🔄 成交筆數：{info.get('transaction', 'N/A')} 筆
+🏛️ 市場：{market_name}
 """
             return result.strip()
             
@@ -64,7 +96,7 @@ class StockPriceTool(BaseTool):
 
 class TechnicalAnalysisInput(BaseModel):
     """技術分析工具的輸入模型"""
-    stock_id: str = Field(description="台灣股票代碼，例如 2330（台積電）")
+    stock_id: str = Field(description="台灣股票代碼，支援上市(TWSE)與上櫃(TPEx)股票。例如：2330（台積電-上市）、6488（環球晶-上櫃）")
 
 
 class TechnicalAnalysisTool(BaseTool):
@@ -75,9 +107,12 @@ class TechnicalAnalysisTool(BaseTool):
     name: str = "technical_analysis"
     description: str = """
     對台灣股票進行技術分析，計算並解讀多種技術指標。
+    支援上市(TWSE)與上櫃(TPEx)股票，系統會自動判斷。
     包括：移動平均線(MA5/10/20)、RSI、KD、MACD、布林通道等。
     會根據技術指標給出多空訊號解讀。
-    輸入股票代碼即可獲取完整的技術分析報告。
+
+    上市股票範例：2330（台積電）、2317（鴻海）
+    上櫃股票範例：6488（環球晶）、5765（雲豹能源）
     """
     args_schema: Type[BaseModel] = TechnicalAnalysisInput
     fetcher: Any = None
@@ -92,14 +127,37 @@ class TechnicalAnalysisTool(BaseTool):
         run_manager: Optional[CallbackManagerForToolRun] = None,
     ) -> str:
         """執行技術分析"""
+        import json
+        import re
+
         try:
+            # 處理 JSON 格式的輸入
+            if stock_id and isinstance(stock_id, str):
+                stock_id = stock_id.strip()
+                if stock_id.startswith('{'):
+                    try:
+                        data = json.loads(stock_id)
+                        stock_id = data.get('stock_id') or data.get('stock_code') or data.get('code') or data.get('id')
+                    except json.JSONDecodeError:
+                        pass
+
+            # 提取純數字股票代碼
+            if stock_id:
+                match = re.search(r'\d{4,}', str(stock_id))
+                if match:
+                    stock_id = match.group()
+
+            if not stock_id:
+                return "分析失敗：請提供有效的股票代碼"
+
             analysis = self.fetcher.analyze_stock(stock_id)
             
             if 'error' in analysis and 'info' not in analysis:
                 return f"分析失敗：{analysis['error']}"
             
+            market_name = analysis.get('market_name', '上市')
             result = f"""
-📈 技術分析報告 - {analysis.get('stock_id', stock_id)} {analysis.get('name', '')}
+📈 技術分析報告 - {analysis.get('stock_id', stock_id)} {analysis.get('name', '')} [{market_name}]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 📊 當前價格：{analysis.get('current_price', 'N/A')} 元
@@ -153,7 +211,8 @@ class MarketSummaryTool(BaseTool):
 
     name: str = "market_summary"
     description: str = """
-    查詢台灣加權指數（大盤）的最新資訊。
+    查詢台灣大盤指數的最新資訊。
+    同時提供上市加權指數(TWSE)與上櫃指數(TPEx)。
     包括指數點數、漲跌幅、成交量、成交金額等。
     不需要輸入任何參數。
     """
@@ -163,28 +222,48 @@ class MarketSummaryTool(BaseTool):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.fetcher = TWSEDataFetcher()
-    
+
     def _run(
         self,
         run_manager: Optional[CallbackManagerForToolRun] = None,
     ) -> str:
         """執行大盤查詢"""
         try:
-            summary = self.fetcher.get_market_summary()
-            
-            if 'error' in summary:
-                return f"查詢失敗：{summary['error']}"
-            
-            result = f"""
-🏛️ 台灣加權指數
+            # 獲取上市加權指數
+            twse_summary = self.fetcher.get_market_summary('TWSE')
+            # 獲取上櫃指數
+            tpex_summary = self.fetcher.get_market_summary('TPEX')
+
+            result = ""
+
+            # 上市加權指數
+            if 'error' not in twse_summary:
+                result += f"""
+🏛️ 台灣加權指數 (上市)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📅 日期：{summary.get('date', 'N/A')}
-📈 指數：{summary.get('index', 'N/A')} 點
-📊 漲跌：{summary.get('change', 'N/A')} 點
-📊 成交股數：{summary.get('volume', 'N/A')}
-💵 成交金額：{summary.get('value', 'N/A')}
-🔄 成交筆數：{summary.get('transaction', 'N/A')}
+📅 日期：{twse_summary.get('date', 'N/A')}
+📈 指數：{twse_summary.get('index', 'N/A')} 點
+📊 漲跌：{twse_summary.get('change', 'N/A')} 點
+📊 成交股數：{twse_summary.get('volume', 'N/A')}
+💵 成交金額：{twse_summary.get('value', 'N/A')}
+🔄 成交筆數：{twse_summary.get('transaction', 'N/A')}
 """
+
+            # 上櫃指數
+            if 'error' not in tpex_summary:
+                result += f"""
+🏛️ 櫃買指數 (上櫃)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📅 日期：{tpex_summary.get('date', 'N/A')}
+📈 指數：{tpex_summary.get('index', 'N/A')} 點
+📊 漲跌：{tpex_summary.get('change', 'N/A')} 點
+📊 成交股數：{tpex_summary.get('volume', 'N/A')}
+💵 成交金額：{tpex_summary.get('value', 'N/A')}
+"""
+
+            if not result:
+                return "查詢失敗：無法獲取大盤資訊"
+
             return result.strip()
 
         except Exception as e:
@@ -193,7 +272,7 @@ class MarketSummaryTool(BaseTool):
 
 class StockChartInput(BaseModel):
     """股票圖表工具的輸入模型"""
-    stock_id: str = Field(description="台灣股票代碼，例如 2330（台積電）")
+    stock_id: str = Field(description="台灣股票代碼，支援上市(TWSE)與上櫃(TPEx)股票。例如：2330（台積電-上市）、6488（環球晶-上櫃）")
     months: int = Field(default=3, description="獲取幾個月的歷史數據，預設3個月")
 
 
@@ -204,12 +283,14 @@ class StockChartTool(BaseTool):
 
     name: str = "stock_chart"
     description: str = """生成台灣股票的技術分析圖表。
+    支援上市(TWSE)與上櫃(TPEx)股票，系統會自動判斷。
 
     參數：
-    - stock_id: 股票代碼（如 2330, 2344）
+    - stock_id: 股票代碼（上市如 2330, 上櫃如 6488）
     - months: 歷史數據月數（預設3）
 
-    輸入範例：2330 或 2344
+    上市股票範例：2330（台積電）、2317（鴻海）
+    上櫃股票範例：6488（環球晶）、5765（雲豹能源）
     """
     args_schema: Type[BaseModel] = StockChartInput
     fetcher: Any = None
@@ -315,7 +396,7 @@ class StockChartTool(BaseTool):
 
 class TradingSignalInput(BaseModel):
     """交易訊號工具的輸入模型"""
-    stock_id: str = Field(description="台灣股票代碼，例如 2330（台積電）")
+    stock_id: str = Field(description="台灣股票代碼，支援上市(TWSE)與上櫃(TPEx)股票。例如：2330（台積電-上市）、6488（環球晶-上櫃）")
 
 
 class TradingSignalTool(BaseTool):
@@ -326,9 +407,13 @@ class TradingSignalTool(BaseTool):
     name: str = "trading_signal"
     description: str = """
     分析台灣股票並提供交易建議和買賣訊號。
+    支援上市(TWSE)與上櫃(TPEx)股票，系統會自動判斷。
     基於多種技術指標（MA、RSI、KD、MACD、布林通道）綜合判斷，
     給出強烈買入、買入、觀望、賣出、強烈賣出等建議。
     同時計算支撐位和壓力位，提供操作參考價位。
+
+    上市股票範例：2330（台積電）、2317（鴻海）
+    上櫃股票範例：6488（環球晶）、5765（雲豹能源）
     """
     args_schema: Type[BaseModel] = TradingSignalInput
     fetcher: Any = None
@@ -343,7 +428,29 @@ class TradingSignalTool(BaseTool):
         run_manager: Optional[CallbackManagerForToolRun] = None,
     ) -> str:
         """執行交易訊號分析"""
+        import json
+        import re
+
         try:
+            # 處理 JSON 格式的輸入
+            if stock_id and isinstance(stock_id, str):
+                stock_id = stock_id.strip()
+                if stock_id.startswith('{'):
+                    try:
+                        data = json.loads(stock_id)
+                        stock_id = data.get('stock_id') or data.get('stock_code') or data.get('code') or data.get('id')
+                    except json.JSONDecodeError:
+                        pass
+
+            # 提取純數字股票代碼
+            if stock_id:
+                match = re.search(r'\d{4,}', str(stock_id))
+                if match:
+                    stock_id = match.group()
+
+            if not stock_id:
+                return "分析失敗：請提供有效的股票代碼"
+
             # 獲取股票資訊
             info = self.fetcher.get_stock_info(stock_id)
             stock_name = info.get('name', '')
@@ -416,7 +523,7 @@ class TradingSignalTool(BaseTool):
 
 class PredictionInput(BaseModel):
     """股票走勢預測工具的輸入模型"""
-    stock_id: str = Field(description="台灣股票代碼，例如 2330（台積電）、2317（鴻海）")
+    stock_id: str = Field(description="台灣股票代碼，支援上市(TWSE)與上櫃(TPEx)股票。例如：2330（台積電-上市）、6488（環球晶-上櫃）")
     days: int = Field(default=5, description="預測天數，預設為 5 天，最多 10 天")
 
 
@@ -428,13 +535,16 @@ class StockPredictionTool(BaseTool):
     name: str = "stock_prediction"
     description: str = """
     預測台灣股票未來走勢。
+    支援上市(TWSE)與上櫃(TPEx)股票，系統會自動判斷。
     使用技術分析（RSI、KD、MACD、均線等）和統計方法預測未來價格走勢。
     輸入股票代碼和預測天數，獲取：
     - 趨勢判斷（強勢上漲/偏多/盤整/偏空/強勢下跌）
     - 預測價格和信賴區間
     - 目標價和停損價
     - 支撐位和壓力位
-    此工具使用台灣證券交易所（TWSE）的數據。
+
+    上市股票範例：2330（台積電）、2317（鴻海）
+    上櫃股票範例：6488（環球晶）、5765（雲豹能源）
     """
     args_schema: Type[BaseModel] = PredictionInput
     fetcher: Any = None

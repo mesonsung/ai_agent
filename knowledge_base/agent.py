@@ -1,7 +1,7 @@
 """AI Agent 核心模組"""
 
 import os
-from typing import List
+from typing import List, Any, Optional
 from langchain_classic.agents import AgentExecutor, create_react_agent
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
@@ -22,13 +22,33 @@ from knowledge_base.tools.stock_tools import (
 )
 
 
+class NoStopChatOpenAI(ChatOpenAI):
+    """ChatOpenAI 包裝器，過濾掉 stop 參數（用於不支援 stop 的模型如 grok-4-1-fast-reasoning）"""
+
+    def bind(self, **kwargs):
+        """覆蓋 bind 方法，移除 stop 參數"""
+        # 移除 stop 參數
+        kwargs.pop('stop', None)
+        return super().bind(**kwargs)
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        # 移除 stop 參數
+        kwargs.pop('stop', None)
+        return super()._generate(messages, stop=None, run_manager=run_manager, **kwargs)
+
+    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        # 移除 stop 參數
+        kwargs.pop('stop', None)
+        return await super()._agenerate(messages, stop=None, run_manager=run_manager, **kwargs)
+
+
 class KnowledgeAgent:
     """個人智識庫 AI Agent"""
 
     def __init__(
         self,
         vector_store,
-        model_name: str = "grok-beta",
+        model_name: str = "grok-4-1-fast-reasoning",
         temperature: float = 0.7,
         max_iterations: int = 10,
         verbose: bool = True
@@ -49,12 +69,25 @@ class KnowledgeAgent:
         xai_api_key = os.getenv("XAI_API_KEY")
         xai_base_url = os.getenv("XAI_BASE_URL", "https://api.x.ai/v1")
 
-        self.llm = ChatOpenAI(
-            model=model_name,
-            temperature=temperature,
-            openai_api_key=xai_api_key,
-            openai_api_base=xai_base_url
-        )
+        # 檢查是否為 grok-4 reasoning 系列模型（不支援 stop 參數）
+        is_grok4_reasoning = "grok-4" in model_name and "reasoning" in model_name
+
+        if is_grok4_reasoning:
+            # grok-4-1-fast-reasoning 不支援 stop 參數
+            # 使用自定義包裝器來過濾掉 stop 參數
+            self.llm = NoStopChatOpenAI(
+                model=model_name,
+                temperature=temperature,
+                openai_api_key=xai_api_key,
+                openai_api_base=xai_base_url
+            )
+        else:
+            self.llm = ChatOpenAI(
+                model=model_name,
+                temperature=temperature,
+                openai_api_key=xai_api_key,
+                openai_api_base=xai_base_url
+            )
 
         self.max_iterations = max_iterations
         self.verbose = verbose
@@ -146,10 +179,12 @@ Thought: {agent_scratchpad}"""
         )
 
         # 建立 ReAct Agent
+        # 明確指定 stop_sequence=True 確保 LLM 在 Observation 前停止
         agent = create_react_agent(
             llm=self.llm,
             tools=self.tools,
-            prompt=prompt
+            prompt=prompt,
+            stop_sequence=True
         )
 
         # 建立 Agent 執行器

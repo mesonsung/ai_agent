@@ -1,18 +1,33 @@
-"""TWSE 台灣證券交易所數據獲取模組"""
+"""TWSE/TPEx 台灣證券交易所與櫃買中心數據獲取模組"""
 
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Tuple
 import time
 import json
 
 
 class TWSEDataFetcher:
-    """台灣證券交易所數據獲取器"""
-    
-    BASE_URL = "https://www.twse.com.tw"
-    
+    """台灣證券交易所與櫃買中心數據獲取器
+
+    支援：
+    - TWSE (上市股票): 股票代碼通常為 4 碼，如 2330 台積電
+    - TPEx (上櫃股票): 股票代碼通常為 4 碼，如 6488 環球晶
+
+    系統會自動判斷股票屬於上市或上櫃，並使用對應的 API
+    """
+
+    TWSE_BASE_URL = "https://www.twse.com.tw"
+    TPEX_BASE_URL = "https://www.tpex.org.tw"
+    TPEX_OPENAPI_URL = "https://www.tpex.org.tw/openapi/v1"
+
+    # 快取股票市場類型 (避免重複查詢)
+    _market_cache: Dict[str, str] = {}
+    # 快取 TPEx 股票資料
+    _tpex_quotes_cache: Dict[str, Any] = {}
+    _tpex_quotes_cache_time: Optional[datetime] = None
+
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
@@ -20,26 +35,89 @@ class TWSEDataFetcher:
             'Accept': 'application/json, text/plain, */*',
             'Accept-Language': 'zh-TW,zh;q=0.9,en;q=0.8',
         })
+
+    def _load_tpex_quotes(self) -> None:
+        """載入 TPEx 上櫃股票即時報價資料（使用 OpenAPI）"""
+        # 快取 10 分鐘
+        now = datetime.now()
+        if (self._tpex_quotes_cache_time and
+            (now - self._tpex_quotes_cache_time).seconds < 600 and
+            self._tpex_quotes_cache):
+            return
+
+        try:
+            url = f"{self.TPEX_OPENAPI_URL}/tpex_mainboard_quotes"
+            response = self.session.get(url, timeout=15)
+            if response.status_code == 200:
+                data = response.json()
+                self._tpex_quotes_cache = {
+                    item.get('SecuritiesCompanyCode'): item
+                    for item in data
+                }
+                self._tpex_quotes_cache_time = now
+        except Exception:
+            pass
+
+    def _detect_market(self, stock_id: str) -> str:
+        """
+        偵測股票屬於上市(TWSE)還是上櫃(TPEx)
+
+        Args:
+            stock_id: 股票代碼
+
+        Returns:
+            'TWSE' 或 'TPEX'
+        """
+        # 檢查快取
+        if stock_id in self._market_cache:
+            return self._market_cache[stock_id]
+
+        # 載入 TPEx 報價資料並檢查
+        self._load_tpex_quotes()
+        if stock_id in self._tpex_quotes_cache:
+            self._market_cache[stock_id] = 'TPEX'
+            return 'TPEX'
+
+        # 嘗試 TWSE API 確認
+        try:
+            today = datetime.now()
+            date_str = today.strftime("%Y%m%d")
+            url = f"{self.TWSE_BASE_URL}/exchangeReport/STOCK_DAY?response=json&date={date_str}&stockNo={stock_id}"
+            response = self.session.get(url, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('stat') == 'OK' and 'data' in data and len(data['data']) > 0:
+                    self._market_cache[stock_id] = 'TWSE'
+                    return 'TWSE'
+        except Exception:
+            pass
+
+        # 預設為 TWSE
+        return 'TWSE'
     
     def get_stock_info(self, stock_id: str) -> Dict[str, Any]:
         """
-        獲取股票基本資訊
+        獲取股票基本資訊（自動判斷上市/上櫃）
 
         Args:
-            stock_id: 股票代碼，例如 "2330"
+            stock_id: 股票代碼，例如 "2330"（上市）或 "6488"（上櫃）
 
         Returns:
             股票基本資訊字典
         """
-        # 直接使用個股日成交資訊 API，更穩定
-        return self._get_stock_info_alternative(stock_id)
-    
-    def _get_stock_info_alternative(self, stock_id: str) -> Dict[str, Any]:
-        """備用方案獲取股票資訊"""
+        market = self._detect_market(stock_id)
+
+        if market == 'TPEX':
+            return self._get_tpex_stock_info(stock_id)
+        else:
+            return self._get_twse_stock_info(stock_id)
+
+    def _get_twse_stock_info(self, stock_id: str) -> Dict[str, Any]:
+        """獲取上市股票資訊 (TWSE)"""
         try:
             today = datetime.now()
             date_str = today.strftime("%Y%m%d")
-            url = f"{self.BASE_URL}/exchangeReport/STOCK_DAY?response=json&date={date_str}&stockNo={stock_id}"
+            url = f"{self.TWSE_BASE_URL}/exchangeReport/STOCK_DAY?response=json&date={date_str}&stockNo={stock_id}"
 
             response = self.session.get(url, timeout=10)
             if response.status_code == 200:
@@ -57,6 +135,8 @@ class TWSEDataFetcher:
                     return {
                         'stock_id': stock_id,
                         'name': name,
+                        'market': 'TWSE',
+                        'market_name': '上市',
                         'date': latest[0],
                         'trade_volume': latest[1],
                         'trade_value': latest[2],
@@ -70,38 +150,92 @@ class TWSEDataFetcher:
             return {'error': '無法獲取股票資訊'}
         except Exception as e:
             return {'error': str(e)}
+
+    def _get_tpex_stock_info(self, stock_id: str) -> Dict[str, Any]:
+        """獲取上櫃股票資訊 (TPEx) - 使用 OpenAPI"""
+        try:
+            # 確保載入 TPEx 報價資料
+            self._load_tpex_quotes()
+
+            if stock_id in self._tpex_quotes_cache:
+                item = self._tpex_quotes_cache[stock_id]
+                # OpenAPI 欄位:
+                # Date, SecuritiesCompanyCode, CompanyName, Close, Change, Open, High, Low,
+                # TradingShares, TransactionAmount, TransactionNumber, etc.
+
+                # 轉換日期格式 (1150206 -> 115/02/06)
+                date_raw = item.get('Date', '')
+                if len(date_raw) >= 7:
+                    date_str = f"{date_raw[:3]}/{date_raw[3:5]}/{date_raw[5:7]}"
+                else:
+                    date_str = date_raw
+
+                return {
+                    'stock_id': stock_id,
+                    'name': item.get('CompanyName', ''),
+                    'market': 'TPEX',
+                    'market_name': '上櫃',
+                    'date': date_str,
+                    'trade_volume': item.get('TradingShares', 'N/A'),
+                    'trade_value': item.get('TransactionAmount', 'N/A'),
+                    'open': item.get('Open', 'N/A'),
+                    'high': item.get('High', 'N/A'),
+                    'low': item.get('Low', 'N/A'),
+                    'close': item.get('Close', 'N/A'),
+                    'change': item.get('Change', 'N/A'),
+                    'transaction': item.get('TransactionNumber', 'N/A')
+                }
+            return {'error': '無法獲取股票資訊'}
+        except Exception as e:
+            return {'error': str(e)}
+
+    def _get_tpex_stock_name(self, stock_id: str) -> str:
+        """獲取上櫃股票名稱 - 使用 OpenAPI 快取"""
+        self._load_tpex_quotes()
+        if stock_id in self._tpex_quotes_cache:
+            return self._tpex_quotes_cache[stock_id].get('CompanyName', '')
+        return ''
     
     def get_stock_history(self, stock_id: str, months: int = 3) -> pd.DataFrame:
         """
-        獲取股票歷史數據
-        
+        獲取股票歷史數據（自動判斷上市/上櫃）
+
         Args:
             stock_id: 股票代碼
             months: 獲取幾個月的數據
-            
+
         Returns:
             DataFrame 包含歷史價格數據
         """
+        market = self._detect_market(stock_id)
+
+        if market == 'TPEX':
+            return self._get_tpex_stock_history(stock_id, months)
+        else:
+            return self._get_twse_stock_history(stock_id, months)
+
+    def _get_twse_stock_history(self, stock_id: str, months: int = 3) -> pd.DataFrame:
+        """獲取上市股票歷史數據 (TWSE)"""
         all_data = []
-        
+
         for i in range(months):
             date = datetime.now() - timedelta(days=30 * i)
             date_str = date.strftime("%Y%m%d")
-            
+
             try:
-                url = f"{self.BASE_URL}/exchangeReport/STOCK_DAY?response=json&date={date_str}&stockNo={stock_id}"
+                url = f"{self.TWSE_BASE_URL}/exchangeReport/STOCK_DAY?response=json&date={date_str}&stockNo={stock_id}"
                 response = self.session.get(url, timeout=10)
-                
+
                 if response.status_code == 200:
                     data = response.json()
                     if 'data' in data:
                         all_data.extend(data['data'])
-                
+
                 time.sleep(0.5)  # 避免請求過快
-                
+
             except Exception:
                 continue
-        
+
         if not all_data:
             return pd.DataFrame()
 
@@ -113,6 +247,74 @@ class TWSEDataFetcher:
 
         # 移除註記欄位
         df = df.drop(columns=['note'], errors='ignore')
+
+        # 數據清洗
+        df = self._clean_data(df)
+
+        return df.drop_duplicates(subset=['date']).sort_values('date').reset_index(drop=True)
+
+    def _get_tpex_stock_history(self, stock_id: str, months: int = 3) -> pd.DataFrame:
+        """獲取上櫃股票歷史數據 (TPEx) - 使用 dailyQuotes API 逐日查詢"""
+        all_data = []
+
+        # 計算需要查詢的天數（約 months * 22 個交易日）
+        days_to_query = months * 30
+
+        # 從今天開始往回查詢
+        current_date = datetime.now()
+
+        for i in range(days_to_query):
+            date = current_date - timedelta(days=i)
+
+            # 跳過週末
+            if date.weekday() >= 5:
+                continue
+
+            # TPEx 使用民國年格式: 115/02/06
+            roc_year = date.year - 1911
+            date_str = f"{roc_year}/{date.month:02d}/{date.day:02d}"
+
+            try:
+                url = f"{self.TPEX_BASE_URL}/www/zh-tw/afterTrading/dailyQuotes"
+                params = {
+                    'date': date_str,
+                    'response': 'json'
+                }
+                response = self.session.get(url, params=params, timeout=10)
+
+                if response.status_code == 200:
+                    data = response.json()
+                    if data.get('tables') and len(data['tables']) > 0:
+                        table = data['tables'][0]
+                        rows = table.get('data', [])
+
+                        # 在所有股票中找出目標股票
+                        for row in rows:
+                            if row[0] == stock_id:
+                                # 欄位順序: 代號, 名稱, 收盤, 漲跌, 開盤, 最高, 最低, 均價, 成交股數, 成交金額, 成交筆數, ...
+                                all_data.append({
+                                    'date': date_str,
+                                    'open': row[4],      # 開盤
+                                    'high': row[5],      # 最高
+                                    'low': row[6],       # 最低
+                                    'close': row[2],     # 收盤
+                                    'change': row[3],    # 漲跌
+                                    'volume': row[8],    # 成交股數
+                                    'value': row[9],     # 成交金額
+                                    'transaction': row[10] if len(row) > 10 else 'N/A'  # 成交筆數
+                                })
+                                break
+
+                time.sleep(0.2)  # 避免請求過快
+
+            except Exception:
+                continue
+
+        if not all_data:
+            return pd.DataFrame()
+
+        # 轉換為 DataFrame
+        df = pd.DataFrame(all_data)
 
         # 數據清洗
         df = self._clean_data(df)
@@ -226,15 +428,25 @@ class TWSEDataFetcher:
         lower = middle - (std * std_dev)
         return upper, middle, lower
 
-    def get_market_summary(self) -> Dict[str, Any]:
+    def get_market_summary(self, market: str = 'TWSE') -> Dict[str, Any]:
         """
         獲取大盤指數資訊
+
+        Args:
+            market: 'TWSE' (上市加權指數) 或 'TPEX' (上櫃指數)
 
         Returns:
             大盤指數資訊
         """
+        if market.upper() == 'TPEX':
+            return self._get_tpex_market_summary()
+        else:
+            return self._get_twse_market_summary()
+
+    def _get_twse_market_summary(self) -> Dict[str, Any]:
+        """獲取上市加權指數 (TWSE)"""
         try:
-            url = f"{self.BASE_URL}/exchangeReport/FMTQIK?response=json"
+            url = f"{self.TWSE_BASE_URL}/exchangeReport/FMTQIK?response=json"
             response = self.session.get(url, timeout=10)
 
             if response.status_code == 200:
@@ -243,6 +455,8 @@ class TWSEDataFetcher:
                 if data.get('stat') == 'OK' and 'data' in data and len(data['data']) > 0:
                     latest = data['data'][-1]
                     return {
+                        'market': 'TWSE',
+                        'market_name': '台灣加權指數',
                         'date': latest[0],           # 日期
                         'volume': latest[1],         # 成交股數
                         'value': latest[2],          # 成交金額
@@ -251,6 +465,35 @@ class TWSEDataFetcher:
                         'change': latest[5]          # 漲跌點數
                     }
             return {'error': '無法獲取大盤資訊'}
+        except Exception as e:
+            return {'error': str(e)}
+
+    def _get_tpex_market_summary(self) -> Dict[str, Any]:
+        """獲取上櫃指數 (TPEx)"""
+        try:
+            today = datetime.now()
+            roc_year = today.year - 1911
+            date_str = f"{roc_year}/{today.month:02d}/{today.day:02d}"
+
+            url = f"{self.TPEX_BASE_URL}/web/stock/aftertrading/otc_idx_daily/idx_result.php?l=zh-tw&d={date_str}"
+            response = self.session.get(url, timeout=10)
+
+            if response.status_code == 200:
+                data = response.json()
+                # 尋找櫃買指數
+                if data.get('aaData') and len(data['aaData']) > 0:
+                    latest = data['aaData'][-1]
+                    return {
+                        'market': 'TPEX',
+                        'market_name': '櫃買指數',
+                        'date': latest[0] if len(latest) > 0 else 'N/A',
+                        'index': latest[1] if len(latest) > 1 else 'N/A',
+                        'change': latest[2] if len(latest) > 2 else 'N/A',
+                        'volume': latest[3] if len(latest) > 3 else 'N/A',
+                        'value': latest[4] if len(latest) > 4 else 'N/A',
+                        'transaction': latest[5] if len(latest) > 5 else 'N/A'
+                    }
+            return {'error': '無法獲取櫃買指數資訊'}
         except Exception as e:
             return {'error': str(e)}
 
@@ -283,6 +526,8 @@ class TWSEDataFetcher:
         analysis = {
             'stock_id': stock_id,
             'name': info.get('name', ''),
+            'market': info.get('market', 'TWSE'),
+            'market_name': info.get('market_name', '上市'),
             'current_price': info.get('close', ''),
             'change': info.get('change', ''),
             'volume': info.get('trade_volume', ''),
